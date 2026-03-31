@@ -1,0 +1,24 @@
+{
+  "name": "@amoeba/pi-extension",
+  "version": "0.2.0",
+  "description": "pi extension, wip",
+  "keywords": [
+    "pi-package"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ],
+    "skills": [
+      "./skills"
+    ],
+    "agents": [
+      "./agents"
+    ]
+  },
+  "devDependencies": {
+    "@mariozechner/pi-coding-agent": "^0.64.0",
+    "@sinclair/typebox": "^0.34.49",
+    "typescript": "^6.0.2"
+  }
+}
