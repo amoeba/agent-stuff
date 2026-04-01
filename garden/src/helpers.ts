@@ -5,6 +5,16 @@ import * as path from "node:path";
 
 import { getAgentDir, withFileMutationQueue } from "@mariozechner/pi-coding-agent";
 
+/**
+ * Match a repo name against a pattern.
+ * Supports exact names and glob-style wildcards: * matches any sequence of chars.
+ * e.g. "driver-*", "*-go", "adbc-*"
+ */
+export function matchesRepoPattern(name: string, pattern: string): boolean {
+  const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
+  return new RegExp(`^${escaped}$`).test(name);
+}
+
 export function slugify(s: string): string {
   return s
     .toLowerCase()
@@ -258,6 +268,8 @@ export async function runWorker(
     });
 
     if (result.status === "running") result.status = "done";
+    // Parse any PROPOSED_PR block out of the final output
+    result.proposal = parseProposal(result.output, job);
     return result;
   } finally {
     await cleanupPromptFile(dir, file);
@@ -284,6 +296,29 @@ export async function mapConcurrent<T, U>(
   );
   await Promise.all(workers);
   return results;
+}
+
+/**
+ * Parse a PROPOSED_PR JSON block from worker output.
+ * Workers emit a fenced ```json block with a "PROPOSED_PR" marker.
+ */
+export function parseProposal(output: string, job: WorkerJob): ProposedPR | undefined {
+  const match = output.match(/```json\s*PROPOSED_PR\s*([\s\S]*?)```/i);
+  if (!match) return undefined;
+  try {
+    const data = JSON.parse(match[1].trim());
+    return {
+      repo: job.repo,
+      org: job.org,
+      defaultBranch: job.defaultBranch,
+      branchName: data.branchName ?? "",
+      prTitle: data.prTitle ?? "",
+      prBody: data.prBody ?? "",
+      diffSummary: data.diffSummary ?? "",
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 export function buildSummaryPrompt(

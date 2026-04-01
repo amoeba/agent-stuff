@@ -1,7 +1,7 @@
 import { type ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 
-import { ghListRepos, repoHasFile, getWorkerSystemPrompt } from "./helpers";
+import { ghListRepos, repoHasFile, matchesRepoPattern, getWorkerSystemPrompt } from "./helpers";
 import { runGarden } from "./run";
 import { WIDGET_KEY } from "./constants";
 
@@ -12,22 +12,24 @@ export default function (pi: ExtensionAPI) {
       "Run any task across all repos in a GitHub org using parallel subagents. " +
       "Pass --dry-run to preview without executing.",
     handler: async (args, ctx) => {
+      // Parse flags: --org=<name>  --repo=<pattern>  --dry-run
       const dryRun = /--dry-run\b/.test(args ?? "");
-      const cleanArgs = (args ?? "").replace(/--dry-run\b/, "").trim();
+      let cleanArgs = (args ?? "").replace(/--dry-run\b/, "").trim();
       ctx.ui.notify(
         dryRun ? "🌱 garden: dry-run" : "🌱 garden: starting…",
         "info",
       );
 
-      // Gather params — parse org from args if provided as --org=<name>
-      const orgMatch = /--org[= ](\S+)/.exec(cleanArgs ?? "");
-      const taskStr = orgMatch
-        ? cleanArgs.replace(orgMatch[0], "").trim()
-        : cleanArgs;
+      const orgMatch = /--org[= ](\S+)/.exec(cleanArgs);
+      if (orgMatch) cleanArgs = cleanArgs.replace(orgMatch[0], "").trim();
       const org = orgMatch?.[1] ?? "adbc-drivers";
 
+      const repoMatch = /--repo[= ](\S+)/.exec(cleanArgs);
+      if (repoMatch) cleanArgs = cleanArgs.replace(repoMatch[0], "").trim();
+      const repoFilter = repoMatch?.[1];
+
       const task =
-        taskStr ||
+        cleanArgs ||
         (await ctx.ui.input(
           "Task",
           "What should each repo's worker agent do? e.g. 'What Go version is used?' or 'Update go toolchain to 1.26'",
@@ -48,6 +50,11 @@ export default function (pi: ExtensionAPI) {
       let previewRepos: RepoInfo[];
       try {
         previewRepos = await ghListRepos(org, new AbortController().signal);
+        if (repoFilter?.trim()) {
+          previewRepos = previewRepos.filter((r) =>
+            matchesRepoPattern(r.name, repoFilter.trim())
+          );
+        }
         if (fileFilter.trim()) {
           const checks = await Promise.all(
             previewRepos.map((r) =>
@@ -145,10 +152,29 @@ export default function (pi: ExtensionAPI) {
       const { results, summary } = await runGarden({
         org,
         task,
+        repoFilter: repoFilter || undefined,
         fileFilter: fileFilter || undefined,
         dryRun: false,
         onProgress: (msg) => ctx.ui.setStatus(WIDGET_KEY, msg),
         onResults: renderWidget,
+        onProposal: async (proposal) => {
+          // Pause the widget while we show the confirm dialog
+          ctx.ui.setWidget(WIDGET_KEY, []);
+          const approved = await ctx.ui.confirm(
+            `Open PR for ${proposal.repo}?`,
+            [
+              `**Branch:** \`${proposal.branchName}\``,
+              `**Title:** ${proposal.prTitle}`,
+              ``,
+              `**Changes:**`,
+              proposal.diffSummary,
+              ``,
+              `**PR body:**`,
+              proposal.prBody,
+            ].join("\n"),
+          );
+          return approved ?? false;
+        },
       });
 
       ctx.ui.setStatus(WIDGET_KEY, "");
@@ -191,6 +217,12 @@ export default function (pi: ExtensionAPI) {
           "'What Go version is declared in go.mod?', " +
           "'Update the go toolchain directive in go.mod to go1.26, open a draft PR, and get CI green.'",
       }),
+      repo: Type.Optional(
+        Type.String({
+          description:
+            "Target a specific repo or wildcard pattern, e.g. 'adbc-driver-go' or 'adbc-driver-*'. Omit for all repos.",
+        }),
+      ),
       fileFilter: Type.Optional(
         Type.String({
           description:
@@ -217,6 +249,7 @@ export default function (pi: ExtensionAPI) {
       const { repos, results, summary } = await runGarden({
         org: params.org,
         task: params.task,
+        repoFilter: params.repo,
         fileFilter: params.fileFilter,
         dryRun: params.dryRun ?? false,
         signal,
