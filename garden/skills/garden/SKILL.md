@@ -30,9 +30,11 @@ The orchestrator collects all worker outputs and asks the LLM to synthesize them
 /garden What Go version is declared in go.mod?
 /garden --dry-run update go toolchain to 1.26 in all repos
 /garden --org=my-other-org audit dependency versions
+/garden --org amoeba --repo ac-server-monitor create prs to upgrade the go toolchain to 1.26.0
+/garden --file-filter go.mod update go toolchain to 1.26 in all repos
 ```
 
-The org defaults to `adbc-drivers`. Override with `--org=<name>`. You'll be prompted for an optional file filter.
+The org defaults to `adbc-drivers`. All flags (`--org`, `--repo`, `--file-filter`, `--dry-run`) are optional; anything remaining after stripping flags is treated as the task.
 
 ### Natural language (LLM calls the `garden` tool)
 

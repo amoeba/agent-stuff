@@ -28,6 +28,10 @@ export default function (pi: ExtensionAPI) {
       if (repoMatch) cleanArgs = cleanArgs.replace(repoMatch[0], "").trim();
       const repoFilter = repoMatch?.[1];
 
+      const fileFilterMatch = /--file-filter[= ](\S+)/.exec(cleanArgs);
+      if (fileFilterMatch) cleanArgs = cleanArgs.replace(fileFilterMatch[0], "").trim();
+      const fileFilter = fileFilterMatch?.[1] ?? "";
+
       const task =
         cleanArgs ||
         (await ctx.ui.input(
@@ -38,12 +42,6 @@ export default function (pi: ExtensionAPI) {
         ctx.ui.notify("Cancelled — no task specified.", "warning");
         return;
       }
-
-      const fileFilterInput = await ctx.ui.input(
-        "Filter repos by file presence (leave blank for all)",
-        "e.g. go.mod",
-      );
-      const fileFilter = fileFilterInput ?? "";
 
       // List repos for confirm / dry-run preview
       ctx.ui.setStatus(WIDGET_KEY, `Listing ${org} repos…`);
@@ -112,16 +110,6 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
-      const confirmed = await ctx.ui.confirm(
-        `Run on ${previewRepos.length} repos?`,
-        previewRepos.map((r) => `  • ${r.name}`).join("\n") +
-          `\n\nTask: ${task}`,
-      );
-      if (!confirmed) {
-        ctx.ui.notify("Cancelled.", "warning");
-        return;
-      }
-
       let systemPrompt: string;
       try {
         systemPrompt = getWorkerSystemPrompt();
@@ -161,7 +149,7 @@ export default function (pi: ExtensionAPI) {
           // Pause the widget while we show the confirm dialog
           ctx.ui.setWidget(WIDGET_KEY, []);
           const approved = await ctx.ui.confirm(
-            `Open PR for ${proposal.repo}?`,
+            `Open PR for ${proposal.org}/${proposal.repo}?`,
             [
               `**Branch:** \`${proposal.branchName}\``,
               `**Title:** ${proposal.prTitle}`,
