@@ -10,7 +10,8 @@
       "./garden/src/index.ts"
     ],
     "skills": [
-      "./garden/skills"
+      "./garden/skills",
+      "./skills"
     ],
     "agents": [
       "./garden/agents"
