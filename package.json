@@ -10,11 +10,7 @@
       "./garden/src/index.ts"
     ],
     "skills": [
-      "./garden/skills",
       "./skills"
-    ],
-    "agents": [
-      "./garden/agents"
     ]
   },
   "devDependencies": {
