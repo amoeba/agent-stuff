@@ -7,10 +7,11 @@
   ],
   "pi": {
     "extensions": [
-      "./garden/src/index.ts"
+      "./pi-extensions/garden/src/index.ts"
     ],
     "skills": [
-      "./skills"
+      "./skills",
+      "./pi-extensions/garden/skills"
     ]
   },
   "devDependencies": {
