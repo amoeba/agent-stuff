@@ -3,7 +3,27 @@ import * as os from "node:os";
 import { spawn } from "node:child_process";
 import * as path from "node:path";
 
-import { getAgentDir, withFileMutationQueue } from "@mariozechner/pi-coding-agent";
+import { getAgentDir } from "@mariozechner/pi-coding-agent";
+
+import type { RepoInfo, WorkerJob, WorkerResult, ProposedPR } from "./types";
+
+type SpawnOpts = { signal?: AbortSignal; cwd?: string };
+
+export async function spawnCapture(
+  command: string,
+  args: string[],
+  opts: SpawnOpts = {},
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let out = "", err = "";
+    const proc = spawn(command, args, { shell: false, stdio: ["ignore", "pipe", "pipe"], cwd: opts.cwd });
+    proc.stdout.on("data", (d: Buffer) => { out += d; });
+    proc.stderr.on("data", (d: Buffer) => { err += d; });
+    proc.on("close", (code) => code === 0 ? resolve(out) : reject(new Error(`${command} failed: ${err.trim()}`)));
+    proc.on("error", reject);
+    opts.signal?.addEventListener("abort", () => proc.kill("SIGTERM"), { once: true });
+  });
+}
 
 /**
  * Match a repo name against a pattern.
@@ -23,53 +43,16 @@ export function slugify(s: string): string {
     .slice(0, 60);
 }
 
-export async function ghListRepos(
-  org: string,
-  signal: AbortSignal,
-): Promise<RepoInfo[]> {
-  return new Promise((resolve, reject) => {
-    const args = [
-      "repo",
-      "list",
-      org,
-      "--limit",
-      "100",
-      "--json",
-      "name,defaultBranchRef",
-      "--jq",
-      '.[] | [.name, (.defaultBranchRef.name // "main")] | @tsv',
-    ];
-    let out = "";
-    let err = "";
-    const proc = spawn("gh", args, {
-      shell: false,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    proc.stdout.on("data", (d: Buffer) => {
-      out += d.toString();
-    });
-    proc.stderr.on("data", (d: Buffer) => {
-      err += d.toString();
-    });
-    proc.on("close", (code) => {
-      if (code !== 0) {
-        reject(new Error(`gh repo list failed: ${err}`));
-        return;
-      }
-      const repos: RepoInfo[] = out
-        .trim()
-        .split("\n")
-        .filter(Boolean)
-        .map((line) => {
-          const [name, defaultBranch] = line.split("\t");
-          return { name, defaultBranch: defaultBranch ?? "main" };
-        });
-      resolve(repos);
-    });
-    proc.on("error", reject);
-    signal.addEventListener("abort", () => proc.kill("SIGTERM"), {
-      once: true,
-    });
+export async function ghListRepos(org: string, signal: AbortSignal): Promise<RepoInfo[]> {
+  const out = await spawnCapture(
+    "gh",
+    ["repo", "list", org, "--limit", "100", "--json", "name,defaultBranchRef",
+     "--jq", '.[] | [.name, (.defaultBranchRef.name // "main")] | @tsv'],
+    { signal },
+  );
+  return out.trim().split("\n").filter(Boolean).map((line) => {
+    const [name, defaultBranch] = line.split("\t");
+    return { name, defaultBranch: defaultBranch ?? "main" };
   });
 }
 
@@ -79,56 +62,20 @@ export async function repoHasFile(
   filePath: string,
   signal: AbortSignal,
 ): Promise<boolean> {
-  // filePath may be an exact path like "go/go.mod", or just a filename like "go.mod".
-  // For an exact path, check directly. For a bare filename, use the git tree API
-  // to search recursively so we find it in any subdirectory (e.g. go/go.mod).
+  // Exact path (contains "/"): check directly. Bare filename: search full tree recursively.
   const isExactPath = filePath.includes("/");
-
-  if (isExactPath) {
-    return new Promise((resolve) => {
-      const proc = spawn(
-        "gh",
-        ["api", `repos/${org}/${repo}/contents/${filePath}`, "--jq", ".name"],
-        { shell: false, stdio: ["ignore", "pipe", "pipe"] },
-      );
-      let out = "";
-      proc.stdout.on("data", (d: Buffer) => {
-        out += d.toString();
-      });
-      proc.on("close", (code) => {
-        resolve(code === 0 && out.trim().length > 0);
-      });
-      proc.on("error", () => resolve(false));
-      signal.addEventListener("abort", () => proc.kill("SIGTERM"), {
-        once: true,
-      });
-    });
-  }
-
-  // Bare filename — search the full tree recursively
-  return new Promise((resolve) => {
-    const proc = spawn(
-      "gh",
-      [
-        "api",
+  const [apiPath, jq] = isExactPath
+    ? [`repos/${org}/${repo}/contents/${filePath}`, ".name"]
+    : [
         `repos/${org}/${repo}/git/trees/HEAD?recursive=1`,
-        "--jq",
         `.tree[] | select(.type == "blob" and (.path | split("/") | last) == "${filePath}") | .path`,
-      ],
-      { shell: false, stdio: ["ignore", "pipe", "pipe"] },
-    );
-    let out = "";
-    proc.stdout.on("data", (d: Buffer) => {
-      out += d.toString();
-    });
-    proc.on("close", (code) => {
-      resolve(code === 0 && out.trim().length > 0);
-    });
-    proc.on("error", () => resolve(false));
-    signal.addEventListener("abort", () => proc.kill("SIGTERM"), {
-      once: true,
-    });
-  });
+      ];
+  try {
+    const out = await spawnCapture("gh", ["api", apiPath, "--jq", jq], { signal });
+    return out.trim().length > 0;
+  } catch {
+    return false;
+  }
 }
 
 export function getWorkerSystemPrompt(): string {
@@ -156,30 +103,18 @@ export function getWorkerSystemPrompt(): string {
 }
 
 function getPiInvocation(args: string[]): { command: string; args: string[] } {
-  const currentScript = process.argv[1];
-  if (currentScript && fs.existsSync(currentScript)) {
-    return { command: process.execPath, args: [currentScript, ...args] };
-  }
-  const execName = path.basename(process.execPath).toLowerCase();
-  const isGenericRuntime = /^(node|bun)(\.exe)?$/.test(execName);
-  if (!isGenericRuntime) {
-    return { command: process.execPath, args };
+  const script = process.argv[1];
+  if (script && fs.existsSync(script)) {
+    return { command: process.execPath, args: [script, ...args] };
   }
   return { command: "pi", args };
 }
 
-async function writePromptFile(content: string): Promise<{ dir: string; file: string }> {
-  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "garden-"));
+async function writePromptFile(content: string): Promise<string> {
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "garden-worker-"));
   const file = path.join(dir, "system-prompt.md");
-  await withFileMutationQueue(file, async () => {
-    await fs.promises.writeFile(file, content, { encoding: "utf-8", mode: 0o600 });
-  });
-  return { dir, file };
-}
-
-async function cleanupPromptFile(dir: string, file: string): Promise<void> {
-  try { await fs.promises.unlink(file); } catch { /* ignore */ }
-  try { await fs.promises.rmdir(dir); } catch { /* ignore */ }
+  await fs.promises.writeFile(file, content, { encoding: "utf-8", mode: 0o600 });
+  return file;
 }
 
 export async function runWorker(
@@ -193,7 +128,7 @@ export async function runWorker(
     status: "running",
     output: "",
   };
-  const { dir, file } = await writePromptFile(systemPrompt);
+  const promptFile = await writePromptFile(systemPrompt);
 
   try {
     const jobJson = JSON.stringify(job, null, 2);
@@ -203,7 +138,7 @@ export async function runWorker(
       "--mode", "json",
       "-p",
       "--no-session",
-      "--append-system-prompt", file,
+      "--append-system-prompt", promptFile,
       userMessage,
     ];
 
@@ -272,7 +207,7 @@ export async function runWorker(
     result.proposal = parseProposal(result.output, job);
     return result;
   } finally {
-    await cleanupPromptFile(dir, file);
+    await fs.promises.rm(path.dirname(promptFile), { recursive: true, force: true }).catch(() => {});
     onUpdate({ ...result });
   }
 }
@@ -325,29 +260,8 @@ export function parseProposal(output: string, job: WorkerJob): ProposedPR | unde
 
 const CACHE_UPDATE_INTERVAL_SECS = 300;
 
-/**
- * Fire-and-forget spawn wrapper. Resolves on exit 0, rejects otherwise.
- */
-function spawnPromise(
-  command: string,
-  args: string[],
-  opts: { signal?: AbortSignal; cwd?: string } = {},
-): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const proc = spawn(command, args, {
-      shell: false,
-      stdio: "ignore",
-      cwd: opts.cwd,
-    });
-    proc.on("close", (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`${command} ${args.join(" ")} exited with code ${code}`));
-    });
-    proc.on("error", reject);
-    if (opts.signal) {
-      opts.signal.addEventListener("abort", () => proc.kill("SIGTERM"), { once: true });
-    }
-  });
+function spawnPromise(command: string, args: string[], opts: SpawnOpts = {}): Promise<void> {
+  return spawnCapture(command, args, opts).then(() => {});
 }
 
 /**

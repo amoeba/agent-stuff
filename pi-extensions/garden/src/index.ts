@@ -1,9 +1,11 @@
 import { type ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 
-import { ghListRepos, repoHasFile, matchesRepoPattern, getWorkerSystemPrompt } from "./helpers";
+import type { WorkerResult } from "./types";
 import { runGarden } from "./run";
 import { WIDGET_KEY } from "./constants";
+
+const ICONS = { done: "✅", running: "⏳", error: "❌" } as const;
 
 export default function (pi: ExtensionAPI) {
   // ── /garden command ────────────────────────────────────────────────────────
@@ -43,78 +45,19 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
-      // List repos for confirm / dry-run preview
-      ctx.ui.setStatus(WIDGET_KEY, `Listing ${org} repos…`);
-      let previewRepos: RepoInfo[];
-      try {
-        previewRepos = await ghListRepos(org, new AbortController().signal);
-        if (repoFilter?.trim()) {
-          previewRepos = previewRepos.filter((r) =>
-            matchesRepoPattern(r.name, repoFilter.trim())
-          );
-        }
-        if (fileFilter.trim()) {
-          const checks = await Promise.all(
-            previewRepos.map((r) =>
-              repoHasFile(
-                org,
-                r.name,
-                fileFilter.trim(),
-                new AbortController().signal,
-              ),
-            ),
-          );
-          previewRepos = previewRepos.filter((_, i) => checks[i]);
-        }
-      } catch (e: any) {
-        ctx.ui.notify(`Failed to list repos: ${e.message}`, "error");
-        ctx.ui.setStatus(WIDGET_KEY, "");
-        return;
-      }
-
-      if (previewRepos.length === 0) {
-        ctx.ui.notify("No matching repos found.", "warning");
-        ctx.ui.setStatus(WIDGET_KEY, "");
-        return;
-      }
-
-      ctx.ui.setStatus(WIDGET_KEY, "");
-
-      // Dry-run: show plan immediately without spawning workers
+      // Dry-run: preview without spawning workers
       if (dryRun) {
-        const plan = [
-          `## 🌱 garden dry-run`,
-          ``,
-          `**Org:** ${org}`,
-          `**Task:** ${task}`,
-          fileFilter.trim()
-            ? `**File filter:** \`${fileFilter.trim()}\``
-            : `**File filter:** none (all repos)`,
-          ``,
-          `### Repos that would be targeted (${previewRepos.length})`,
-          ``,
-          ...previewRepos.map(
-            (r) => `- \`${r.name}\` (default branch: \`${r.defaultBranch}\`)`,
-          ),
-          ``,
-          `_Re-run without \`--dry-run\` to execute._`,
-        ].join("\n");
-        ctx.ui.notify(
-          `Dry run: ${previewRepos.length} repos would be targeted`,
-          "info",
-        );
-        pi.sendMessage(
-          { customType: "garden", content: plan, display: true },
-          { triggerTurn: false },
-        );
-        return;
-      }
-
-      let systemPrompt: string;
-      try {
-        systemPrompt = getWorkerSystemPrompt();
-      } catch (e: any) {
-        ctx.ui.notify(e.message, "error");
+        const { repos, summary } = await runGarden({
+          org, task, repoFilter, fileFilter, dryRun: true,
+          onProgress: (msg) => ctx.ui.setStatus(WIDGET_KEY, msg),
+        });
+        ctx.ui.setStatus(WIDGET_KEY, "");
+        if (repos.length === 0) {
+          ctx.ui.notify("No matching repos found.", "warning");
+          return;
+        }
+        ctx.ui.notify(`Dry run: ${repos.length} repos would be targeted`, "info");
+        pi.sendMessage({ customType: "garden", content: summary, display: true }, { triggerTurn: false });
         return;
       }
 
@@ -126,7 +69,7 @@ export default function (pi: ExtensionAPI) {
         ctx.ui.setWidget(WIDGET_KEY, [
           `🌱 garden  ${done} done, ${running} running${errors > 0 ? `, ${errors} errors` : ""}`,
           ...results.map((r) => {
-            const icon = { done: "✅", running: "⏳", error: "❌" }[r.status];
+            const icon = ICONS[r.status];
             const snippet = r.output
               ? "  " + r.output.trim().split("\n")[0].slice(0, 72)
               : r.status === "running"

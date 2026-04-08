@@ -1,7 +1,6 @@
 import * as path from "node:path";
 import * as fs from "node:fs";
 import * as os from "node:os";
-import { spawn } from "node:child_process";
 
 import {
   buildSummaryPrompt,
@@ -13,11 +12,14 @@ import {
   pushBranch,
   repoHasFile,
   runWorker,
+  spawnCapture,
 } from "./helpers";
+
+import type { RepoInfo, WorkerJob, WorkerResult, ProposedPR } from "./types";
 
 import { MAX_CONCURRENCY } from "./constants";
 
-export async function runGarden(params: {
+type RunGardenParams = {
   org: string;
   task: string;
   /** Exact name, wildcard pattern (e.g. "driver-*"), or undefined for all repos */
@@ -31,7 +33,9 @@ export async function runGarden(params: {
   onPlansReady?: (plans: ProposedPR[]) => Promise<boolean>;
   /** Called once per repo when a proposal is ready — return true to open the PR */
   onProposal?: (proposal: ProposedPR) => Promise<boolean>;
-}): Promise<{ repos: RepoInfo[]; results: WorkerResult[]; summary: string }> {
+};
+
+export async function runGarden(params: RunGardenParams): Promise<{ repos: RepoInfo[]; results: WorkerResult[]; summary: string }> {
   const {
     org,
     task,
@@ -96,19 +100,9 @@ export async function runGarden(params: {
   }
 }
 
-async function runWithWorkspace(params: {
-  org: string;
-  task: string;
-  repoFilter?: string;
-  fileFilter?: string;
-  signal: AbortSignal;
-  repos: RepoInfo[];
-  workspace: string;
-  onProgress?: (msg: string) => void;
-  onResults?: (results: WorkerResult[]) => void;
-  onPlansReady?: (plans: ProposedPR[]) => Promise<boolean>;
-  onProposal?: (proposal: ProposedPR) => Promise<boolean>;
-}): Promise<{ repos: RepoInfo[]; results: WorkerResult[]; summary: string }> {
+async function runWithWorkspace(
+  params: RunGardenParams & { repos: RepoInfo[]; workspace: string; signal: AbortSignal },
+): Promise<{ repos: RepoInfo[]; results: WorkerResult[]; summary: string }> {
   const { org, task, signal, repos, workspace } = params;
 
   const systemPrompt = getWorkerSystemPrompt();
@@ -250,12 +244,9 @@ async function runWithWorkspace(params: {
   return { repos, results, summary: summaryPrompt };
 }
 
-async function openPR(
-  proposal: ProposedPR,
-  signal: AbortSignal,
-): Promise<number | null> {
-  return new Promise((resolve) => {
-    const args = [
+async function openPR(proposal: ProposedPR, signal: AbortSignal): Promise<number | null> {
+  try {
+    const out = await spawnCapture("gh", [
       "pr", "create",
       "--repo", `${proposal.org}/${proposal.repo}`,
       "--head", proposal.branchName,
@@ -263,19 +254,10 @@ async function openPR(
       "--title", proposal.prTitle,
       "--body", proposal.prBody,
       "--draft",
-    ];
-    let out = "";
-    let err = "";
-    const proc = spawn("gh", args, { shell: false, stdio: ["ignore", "pipe", "pipe"] });
-    proc.stdout.on("data", (d: Buffer) => { out += d.toString(); });
-    proc.stderr.on("data", (d: Buffer) => { err += d.toString(); });
-    proc.on("close", (code) => {
-      if (code !== 0) { console.error(`gh pr create failed: ${err}`); resolve(null); return; }
-      // gh pr create outputs the PR URL; extract number from it
-      const match = out.trim().match(/\/pull\/(\d+)/);
-      resolve(match ? parseInt(match[1], 10) : null);
-    });
-    proc.on("error", () => resolve(null));
-    signal.addEventListener("abort", () => proc.kill("SIGTERM"), { once: true });
-  });
+    ], { signal });
+    const match = out.trim().match(/\/pull\/(\d+)/);
+    return match ? parseInt(match[1], 10) : null;
+  } catch {
+    return null;
+  }
 }

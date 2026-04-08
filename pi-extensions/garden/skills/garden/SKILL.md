@@ -65,7 +65,7 @@ A repo is a **driver repo** if and only if it has both `manifest.toml` and `.git
 | Go driver repos | `go/manifest.toml` |
 | Rust driver repos | `rust/manifest.toml` |
 
-See `docs/adbc-drivers-repo-taxonomy.md` for the full catalogue.
+See the `adbc-drivers` org documentation for the full repo catalogue.
 
 ## Architecture
 
@@ -87,7 +87,6 @@ See `docs/adbc-drivers-repo-taxonomy.md` for the full catalogue.
 ```
 src/index.ts                            - orchestrator extension
 agents/gardener.md                 - per-repo worker agent system prompt
-docs/adbc-drivers-repo-taxonomy.md      - repo category reference (driver vs infra vs stub)
 skills/garden/SKILL.md                  - this file
 ```
 

@@ -1,9 +1,9 @@
-interface RepoInfo {
+export interface RepoInfo {
   name: string;
   defaultBranch: string;
 }
 
-interface WorkerJob {
+type WorkerJobBase = {
   /** GitHub org/owner */
   org: string;
   repo: string;
@@ -13,23 +13,23 @@ interface WorkerJob {
   /** Shared scratch directory for clones */
   workspace: string;
   /**
-   * Phase 1 (default): clone, apply change, push branch, output PROPOSED_PR block.
-   * Phase 2: given an open PR number, monitor CI, fix failures, mark ready.
-   */
-  phase: "propose" | "monitor";
-  /** Phase 2 only — the PR number to monitor */
-  prNumber?: number;
-  /** Phase 2 only — the branch name already pushed */
-  branchName?: string;
-  /**
    * Pre-populated cached checkout path: ~/.cache/checkouts/github.com/{org}/{repo}
    * Present when the orchestrator successfully ran ensureCachedCheckout before spawning.
    * Workers should prefer this for reads and as a --reference for clones.
    */
   cachedCheckoutPath?: string;
-}
+};
 
-interface ProposedPR {
+/**
+ * Phase 1 (propose): clone, apply change, commit branch locally, output PROPOSED_PR block.
+ * Phase 2 (monitor): given an open PR number, monitor CI, fix failures, mark ready.
+ */
+export type WorkerJob = WorkerJobBase & (
+  | { phase: "propose" }
+  | { phase: "monitor"; prNumber: number; branchName: string }
+);
+
+export interface ProposedPR {
   repo: string;
   org: string;
   branchName: string;
@@ -39,7 +39,7 @@ interface ProposedPR {
   diffSummary: string;
 }
 
-interface WorkerResult {
+export interface WorkerResult {
   repo: string;
   status: "done" | "running" | "error";
   /** The worker's final assistant text output */
