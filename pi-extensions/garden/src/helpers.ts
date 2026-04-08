@@ -321,6 +321,120 @@ export function parseProposal(output: string, job: WorkerJob): ProposedPR | unde
   }
 }
 
+// ── Cached checkout helpers ──────────────────────────────────────────────────
+
+const CACHE_UPDATE_INTERVAL_SECS = 300;
+
+/**
+ * Fire-and-forget spawn wrapper. Resolves on exit 0, rejects otherwise.
+ */
+function spawnPromise(
+  command: string,
+  args: string[],
+  opts: { signal?: AbortSignal; cwd?: string } = {},
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(command, args, {
+      shell: false,
+      stdio: "ignore",
+      cwd: opts.cwd,
+    });
+    proc.on("close", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`${command} ${args.join(" ")} exited with code ${code}`));
+    });
+    proc.on("error", reject);
+    if (opts.signal) {
+      opts.signal.addEventListener("abort", () => proc.kill("SIGTERM"), { once: true });
+    }
+  });
+}
+
+/**
+ * Ensure a cached bare-ish checkout exists at
+ *   ~/.cache/checkouts/github.com/{org}/{repo}
+ *
+ * On the first call the repo is cloned with --filter=blob:none.
+ * On subsequent calls within CACHE_UPDATE_INTERVAL_SECS the cached copy
+ * is returned as-is.  Otherwise the repo is fetched and reset to a clean
+ * slate from origin so workers always see a pristine working tree:
+ *
+ *   git fetch --prune origin
+ *   git reset --hard origin/HEAD
+ *   git clean -ffd
+ *
+ * Returns the absolute path to the checkout.  Throws on unrecoverable error
+ * (callers should treat a thrown error as "cache unavailable").
+ */
+export async function ensureCachedCheckout(
+  org: string,
+  repo: string,
+  signal: AbortSignal,
+): Promise<string> {
+  const cacheRoot = path.join(os.homedir(), ".cache", "checkouts");
+  const checkoutPath = path.join(cacheRoot, "github.com", org, repo);
+  const originUrl = `https://github.com/${org}/${repo}.git`;
+  const gitDir = path.join(checkoutPath, ".git");
+
+  const hasGitDir = await fs.promises
+    .access(gitDir)
+    .then(() => true)
+    .catch(() => false);
+
+  if (!hasGitDir) {
+    await fs.promises.mkdir(path.dirname(checkoutPath), { recursive: true });
+    await spawnPromise("git", ["clone", "--filter=blob:none", originUrl, checkoutPath], { signal });
+    return checkoutPath;
+  }
+
+  // Throttled refresh: skip if we fetched recently.
+  const lastFetchFile = path.join(gitDir, "librarian-last-fetch");
+  const nowEpoch = Math.floor(Date.now() / 1000);
+  let needsUpdate = true;
+
+  try {
+    const content = await fs.promises.readFile(lastFetchFile, "utf-8");
+    const lastEpoch = parseInt(content.trim(), 10);
+    if (!isNaN(lastEpoch) && nowEpoch - lastEpoch < CACHE_UPDATE_INTERVAL_SECS) {
+      needsUpdate = false;
+    }
+  } catch {
+    // No timestamp file yet — treat as needing update.
+  }
+
+  if (needsUpdate) {
+    // Fetch latest refs.
+    await spawnPromise("git", ["-C", checkoutPath, "fetch", "--prune", "origin"], { signal });
+    await fs.promises.writeFile(lastFetchFile, String(nowEpoch), "utf-8");
+
+    // Reset to a clean slate from origin so workers always see a pristine tree.
+    await spawnPromise("git", ["-C", checkoutPath, "reset", "--hard", "origin/HEAD"], { signal });
+    await spawnPromise("git", ["-C", checkoutPath, "clean", "-ffd"], { signal });
+  }
+
+  return checkoutPath;
+}
+
+const PROTECTED_BRANCHES = new Set(["main", "master"]);
+
+export async function pushBranch(
+  proposal: ProposedPR,
+  workspace: string,
+  signal: AbortSignal,
+): Promise<void> {
+  if (PROTECTED_BRANCHES.has(proposal.branchName.trim().toLowerCase())) {
+    throw new Error(
+      `Refusing to push directly to protected branch "${proposal.branchName}" in ${proposal.org}/${proposal.repo}`,
+    );
+  }
+  const repoPath = path.join(workspace, proposal.repo);
+  await spawnPromise(
+    "git",
+    ["-C", repoPath, "push", `https://github.com/${proposal.org}/${proposal.repo}`, proposal.branchName],
+    { signal },
+  );
+}
+
 export function buildSummaryPrompt(
   task: string,
   results: WorkerResult[],

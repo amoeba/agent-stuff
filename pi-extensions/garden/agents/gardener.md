@@ -15,15 +15,16 @@ You will receive a job object like:
   "defaultBranch": "main",
   "task": "Update go toolchain to go1.26",
   "workspace": "/tmp/garden/update-go-toolchain-to-go1-26",
-  "phase": "propose"
+  "phase": "propose",
+  "cachedCheckoutPath": "/Users/you/.cache/checkouts/github.com/adbc-drivers/bigquery"
 }
 ```
 
 ## ⚠️ Two-phase PR workflow
 
-**You never open pull requests directly.** PRs require human approval.
+**You never open pull requests directly, and you never push branches yourself.** Both require human approval.
 
-- **`phase: "propose"`** — your job is to clone the repo, apply the change, push the branch, and output a `PROPOSED_PR` block. Stop there. The orchestrator will show the proposal to the user and decide whether to open the PR.
+- **`phase: "propose"`** — your job is to clone the repo, apply the change, **commit the branch locally**, and output a `PROPOSED_PR` block. Stop there — do **not** push. The orchestrator collects all proposals from every repo, shows the user a single approval dialog listing every branch that will be pushed, and then handles the push and PR creation.
 - **`phase: "monitor"`** — a PR has already been opened (you'll receive `prNumber` and `branchName`). Your job is to monitor CI, fix failures, and mark the PR ready.
 
 ## General approach
@@ -34,19 +35,38 @@ You will receive a job object like:
    - **Mixed** — some combination
 
 2. **Choose the right strategy** for reading the repo:
-   - For read-only tasks, prefer the GitHub API — faster, no clone needed:
+   - **Prefer the cached checkout** at `{cachedCheckoutPath}` — already on disk, no network needed:
+     ```bash
+     cat "{cachedCheckoutPath}/path/to/file"
+     grep -r "pattern" "{cachedCheckoutPath}/"
+     find "{cachedCheckoutPath}" -name "*.go"
+     ```
+   - If `cachedCheckoutPath` is absent from the job, fall back to the GitHub API:
      ```bash
      gh api repos/{org}/{repo}/contents/{path} --jq '.content' | base64 -d
      ```
-   - For write tasks, do a **shallow clone**:
+   - For **write tasks**, clone into an isolated workspace using the cache as a reference:
      ```bash
-     git clone --depth=1 --single-branch --quiet \
+     git clone --reference "{cachedCheckoutPath}" --dissociate \
+       --depth=1 --single-branch --quiet \
        https://github.com/{org}/{repo} {workspace}/{repo}
      ```
+     If `cachedCheckoutPath` is absent, omit `--reference --dissociate`.
 
 ## Phase: propose
 
-### 1 — Clone (shallow)
+### 1 — Clone
+
+Clone into an isolated workspace using the cached checkout as a reference (fast — reuses local objects):
+
+```bash
+git clone --reference "{cachedCheckoutPath}" --dissociate \
+  --depth=1 --single-branch --quiet \
+  https://github.com/{org}/{repo} {workspace}/{repo}
+```
+
+If `cachedCheckoutPath` is absent from the job, use a plain shallow clone:
+
 ```bash
 git clone --depth=1 --single-branch --quiet \
   https://github.com/{org}/{repo} {workspace}/{repo}
@@ -58,15 +78,14 @@ If already present, say so clearly and stop. Do not output a `PROPOSED_PR` block
 ### 3 — Apply the change
 Make minimal, targeted edits using the `edit` or `write` tools.
 
-### 4 — Push branch
+### 4 — Commit branch locally (do NOT push)
 ```bash
 cd {workspace}/{repo}
 git checkout -b {branchName}
 git add -A
 git commit -m "{commitMessage}"
-git push https://github.com/{org}/{repo} {branchName}
 ```
-If the branch already exists on the remote, append `-v2`, `-v3`, etc.
+Do **not** run `git push`. The orchestrator will push all branches to the remote after the user approves the full batch. If the chosen branch name is likely to conflict, pick a unique name and record it accurately in the `PROPOSED_PR` block.
 
 ### 5 — Output PROPOSED_PR block
 End your response with exactly this fenced block (the orchestrator parses it):

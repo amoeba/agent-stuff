@@ -5,10 +5,12 @@ import { spawn } from "node:child_process";
 
 import {
   buildSummaryPrompt,
+  ensureCachedCheckout,
   getWorkerSystemPrompt,
   ghListRepos,
   mapConcurrent,
   matchesRepoPattern,
+  pushBranch,
   repoHasFile,
   runWorker,
 } from "./helpers";
@@ -25,6 +27,8 @@ export async function runGarden(params: {
   signal?: AbortSignal;
   onProgress?: (msg: string) => void;
   onResults?: (results: WorkerResult[]) => void;
+  /** Called with all planned branch pushes; return false to abort before any push happens. */
+  onPlansReady?: (plans: ProposedPR[]) => Promise<boolean>;
   /** Called once per repo when a proposal is ready — return true to open the PR */
   onProposal?: (proposal: ProposedPR) => Promise<boolean>;
 }): Promise<{ repos: RepoInfo[]; results: WorkerResult[]; summary: string }> {
@@ -102,11 +106,26 @@ async function runWithWorkspace(params: {
   workspace: string;
   onProgress?: (msg: string) => void;
   onResults?: (results: WorkerResult[]) => void;
+  onPlansReady?: (plans: ProposedPR[]) => Promise<boolean>;
   onProposal?: (proposal: ProposedPR) => Promise<boolean>;
 }): Promise<{ repos: RepoInfo[]; results: WorkerResult[]; summary: string }> {
   const { org, task, signal, repos, workspace } = params;
 
   const systemPrompt = getWorkerSystemPrompt();
+
+  // Pre-populate cached checkouts for all repos before spawning workers.
+  // Workers use these for reads and as --reference for clones, saving network
+  // round-trips on every run after the first.
+  params.onProgress?.(`Fetching cached checkouts for ${repos.length} repos…`);
+  const cachedPaths = new Map<string, string>();
+  await mapConcurrent(repos, 4, async (repo) => {
+    try {
+      const p = await ensureCachedCheckout(org, repo.name, signal);
+      cachedPaths.set(repo.name, p);
+    } catch {
+      // Non-fatal — worker will fall back to a network clone.
+    }
+  });
 
   // ── Phase 1: propose ────────────────────────────────────────────────────────
   // Each worker clones, applies the change, pushes a branch, and outputs a
@@ -126,6 +145,7 @@ async function runWithWorkspace(params: {
       task,
       workspace,
       phase: "propose",
+      cachedCheckoutPath: cachedPaths.get(repo.name),
     };
     results[i] = await runWorker(job, systemPrompt, signal, (r) => {
       results[i] = r;
@@ -133,6 +153,43 @@ async function runWithWorkspace(params: {
     });
     params.onResults?.([...results]);
   });
+
+  // ── Bulk push approval gate ──────────────────────────────────────────────────
+  // Workers have committed their branches locally; nothing has been pushed yet.
+  // Collect every planned change and, if the caller provided a gate, ask for a
+  // single go/no-go before any remote is touched.
+
+  const proposals = results
+    .map((r) => r.proposal)
+    .filter((p): p is ProposedPR => p != null);
+
+  if (proposals.length > 0) {
+    if (params.onPlansReady) {
+      const approved = await params.onPlansReady(proposals);
+      if (!approved) {
+        for (const r of results) {
+          if (r.proposal) r.notes = "Push cancelled by user";
+        }
+        return { repos, results, summary: buildSummaryPrompt(task, results) };
+      }
+    }
+
+    // Push all branches to the remote now that we have approval.
+    params.onProgress?.(`Pushing ${proposals.length} branch${proposals.length === 1 ? "" : "es"}…`);
+    await mapConcurrent(proposals, MAX_CONCURRENCY, async (proposal) => {
+      const i = results.findIndex((r) => r.repo === proposal.repo);
+      try {
+        await pushBranch(proposal, workspace, signal);
+      } catch (err: any) {
+        if (i >= 0) {
+          results[i].status = "error";
+          results[i].notes = `Push failed: ${err.message}`;
+          results[i].proposal = undefined; // exclude from PR gate
+          params.onResults?.([...results]);
+        }
+      }
+    });
+  }
 
   // ── PR approval gate ────────────────────────────────────────────────────────
   // For each result that has a proposal, ask the caller whether to open the PR.
@@ -177,6 +234,7 @@ async function runWithWorkspace(params: {
         phase: "monitor",
         prNumber,
         branchName: result.proposal.branchName,
+        cachedCheckoutPath: cachedPaths.get(result.proposal.repo),
       };
 
       results[i] = await runWorker(monitorJob, systemPrompt, signal, (r) => {

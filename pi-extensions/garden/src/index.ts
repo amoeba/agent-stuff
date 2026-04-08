@@ -145,6 +145,26 @@ export default function (pi: ExtensionAPI) {
         dryRun: false,
         onProgress: (msg) => ctx.ui.setStatus(WIDGET_KEY, msg),
         onResults: renderWidget,
+        onPlansReady: async (plans) => {
+          ctx.ui.setWidget(WIDGET_KEY, []);
+          const rows = plans.map(
+            (p) => `| \`${p.repo}\` | \`${p.branchName}\` | ${p.diffSummary.split("\n")[0]} |`,
+          );
+          const body = [
+            `**${plans.length} branch${plans.length === 1 ? "" : "es"} will be pushed to GitHub:**`,
+            ``,
+            `| Repo | Branch | Change |`,
+            `|------|--------|--------|`,
+            ...rows,
+            ``,
+            `Approve to push all branches. You will be asked about each PR individually afterwards.`,
+          ].join("\n");
+          const approved = await ctx.ui.confirm(
+            `Push ${plans.length} branch${plans.length === 1 ? "" : "es"} to GitHub?`,
+            body,
+          );
+          return approved ?? false;
+        },
         onProposal: async (proposal) => {
           // Pause the widget while we show the confirm dialog
           ctx.ui.setWidget(WIDGET_KEY, []);

@@ -21,6 +21,12 @@ interface WorkerJob {
   prNumber?: number;
   /** Phase 2 only — the branch name already pushed */
   branchName?: string;
+  /**
+   * Pre-populated cached checkout path: ~/.cache/checkouts/github.com/{org}/{repo}
+   * Present when the orchestrator successfully ran ensureCachedCheckout before spawning.
+   * Workers should prefer this for reads and as a --reference for clones.
+   */
+  cachedCheckoutPath?: string;
 }
 
 interface ProposedPR {
