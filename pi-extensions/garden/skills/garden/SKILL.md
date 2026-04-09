@@ -57,15 +57,15 @@ The LLM defaults to `adbc-drivers` unless another org is mentioned.
 
 ## adbc-drivers repo categories
 
-A repo is a **driver repo** if and only if it has both `manifest.toml` and `.github/workflows/generate.toml`. Non-driver repos have neither.
+A repo is a **driver repo** if it has a `manifest.toml` anywhere in its tree **or** a `.github/workflows/generate.toml` with a `driver = "..."` line. Non-driver repos have neither. Archived repos are automatically excluded from all garden runs.
 
-| Target set | fileFilter |
-|------------|-----------|
-| All driver repos | `manifest.toml` |
-| Go driver repos | `go/manifest.toml` |
-| Rust driver repos | `rust/manifest.toml` |
+| Target set | fileFilter | Notes |
+|------------|------------|-------|
+| All driver repos | `manifest.toml` | Recursive search; catches 16/17 active drivers, zero false positives. Only miss: `hiveserver2` (has `generate.toml` but no `manifest.toml`). |
+| All driver repos (complete) | `.github/workflows/generate.toml` | Catches all 17 drivers. One false positive: `driverbase-rs` (no `driver =` line — workers should self-skip). |
+| Go driver repos | `go/manifest.toml` | Catches all 10 Go drivers, zero false positives. Doesn't cover `hiveserver2` or `singlestore` (non-standard layouts). |
+| Rust driver repos | `rust/manifest.toml` | Catches 4/6 Rust drivers: `athena`, `databricks`, `datafusion`, `teradata`. Misses `clickhouse` and `exasol` (use `src/manifest.toml`). Zero false positives. |
 
-See the `adbc-drivers` org documentation for the full repo catalogue.
 
 ## Architecture
 
