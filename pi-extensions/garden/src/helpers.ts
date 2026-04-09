@@ -46,8 +46,8 @@ export function slugify(s: string): string {
 export async function ghListRepos(org: string, signal: AbortSignal): Promise<RepoInfo[]> {
   const out = await spawnCapture(
     "gh",
-    ["repo", "list", org, "--limit", "100", "--json", "name,defaultBranchRef",
-     "--jq", '.[] | [.name, (.defaultBranchRef.name // "main")] | @tsv'],
+    ["repo", "list", org, "--limit", "100", "--json", "name,defaultBranchRef,isArchived",
+     "--jq", '.[] | select(.isArchived | not) | [.name, (.defaultBranchRef.name // "main")] | @tsv'],
     { signal },
   );
   return out.trim().split("\n").filter(Boolean).map((line) => {
@@ -62,16 +62,21 @@ export async function repoHasFile(
   filePath: string,
   signal: AbortSignal,
 ): Promise<boolean> {
-  // Exact path (contains "/"): check directly. Bare filename: search full tree recursively.
-  const isExactPath = filePath.includes("/");
-  const [apiPath, jq] = isExactPath
-    ? [`repos/${org}/${repo}/contents/${filePath}`, ".name"]
-    : [
-        `repos/${org}/${repo}/git/trees/HEAD?recursive=1`,
-        `.tree[] | select(.type == "blob" and (.path | split("/") | last) == "${filePath}") | .path`,
-      ];
   try {
-    const out = await spawnCapture("gh", ["api", apiPath, "--jq", jq], { signal });
+    // Use a local checkout so submodule contents are visible — the GitHub
+    // tree API only sees submodule gitlinks (type "commit"), not the files
+    // inside them.
+    const checkoutPath = await ensureCachedCheckout(org, repo, signal);
+    const isExactPath = filePath.includes("/");
+    if (isExactPath) {
+      return fs.existsSync(path.join(checkoutPath, filePath));
+    }
+    // Recursive filename search, excluding .git internals.
+    const out = await spawnCapture(
+      "find",
+      [checkoutPath, "-name", filePath, "-not", "-path", "*/.git/*"],
+      { signal },
+    );
     return out.trim().length > 0;
   } catch {
     return false;
@@ -117,6 +122,29 @@ async function writePromptFile(content: string): Promise<string> {
   return file;
 }
 
+/**
+ * Map a tool call onto a human-readable step label shown in the progress widget.
+ */
+function inferStep(toolName: string, args: Record<string, unknown>): string {
+  if (toolName === "bash") {
+    const cmd = String(args["command"] ?? "").toLowerCase();
+    if (/git\s+(clone|fetch|pull)\b/.test(cmd))              return "cloning";
+    if (/git\s+push\b/.test(cmd))                            return "pushing";
+    if (/git\s+commit\b/.test(cmd))                          return "committing";
+    if (/git\s+(checkout\s+-[bB]|switch\s+-c)\b/.test(cmd)) return "branching";
+    if (/\bgh\s+pr\b/.test(cmd))                            return "opening PR";
+    if (/\bgh\s+run\b/.test(cmd))                           return "monitoring CI";
+    if (/\b(grep|rg|ripgrep|ag|find)\b/.test(cmd))          return "searching";
+    if (/\b(npm|yarn|pnpm)\s+(test|run)\b/.test(cmd) ||
+        /\b(go test|cargo test|pytest|jest|vitest)\b/.test(cmd)) return "testing";
+    return "running";
+  }
+  if (toolName === "read")  return "reading";
+  if (toolName === "write") return "writing";
+  if (toolName === "edit")  return "editing";
+  return toolName;
+}
+
 export async function runWorker(
   job: WorkerJob,
   systemPrompt: string,
@@ -155,6 +183,19 @@ export async function runWorker(
         if (!line.trim()) return;
         let event: any;
         try { event = JSON.parse(line); } catch { return; }
+
+        // Track which tool is currently executing so the widget can show the
+        // agent's current step in real time.
+        if (event.type === "tool_execution_start") {
+          result.currentStep = inferStep(event.toolName ?? "", event.args ?? {});
+          onUpdate({ ...result });
+          return;
+        }
+        if (event.type === "tool_execution_end") {
+          result.currentStep = "thinking";
+          onUpdate({ ...result });
+          return;
+        }
 
         // Capture final assistant text from message_end and tool_result_end
         if (
@@ -258,8 +299,6 @@ export function parseProposal(output: string, job: WorkerJob): ProposedPR | unde
 
 // ── Cached checkout helpers ──────────────────────────────────────────────────
 
-const CACHE_UPDATE_INTERVAL_SECS = 300;
-
 function spawnPromise(command: string, args: string[], opts: SpawnOpts = {}): Promise<void> {
   return spawnCapture(command, args, opts).then(() => {});
 }
@@ -276,6 +315,11 @@ function spawnPromise(command: string, args: string[], opts: SpawnOpts = {}): Pr
  *   git fetch --prune origin
  *   git reset --hard origin/HEAD
  *   git clean -ffd
+ *   git submodule update --init --recursive --filter=blob:none
+ *
+ * Every call performs a full refresh — there is no throttle.  Callers can
+ * rely on the checkout always reflecting the current remote HEAD with a clean
+ * working tree and fully-initialised submodules.
  *
  * Returns the absolute path to the checkout.  Throws on unrecoverable error
  * (callers should treat a thrown error as "cache unavailable").
@@ -298,33 +342,25 @@ export async function ensureCachedCheckout(
   if (!hasGitDir) {
     await fs.promises.mkdir(path.dirname(checkoutPath), { recursive: true });
     await spawnPromise("git", ["clone", "--filter=blob:none", originUrl, checkoutPath], { signal });
+    await spawnPromise(
+      "git",
+      ["-C", checkoutPath, "submodule", "update", "--init", "--recursive", "--filter=blob:none"],
+      { signal },
+    ).catch(() => { /* repo may have no submodules — non-fatal */ });
     return checkoutPath;
   }
 
-  // Throttled refresh: skip if we fetched recently.
-  const lastFetchFile = path.join(gitDir, "librarian-last-fetch");
-  const nowEpoch = Math.floor(Date.now() / 1000);
-  let needsUpdate = true;
-
-  try {
-    const content = await fs.promises.readFile(lastFetchFile, "utf-8");
-    const lastEpoch = parseInt(content.trim(), 10);
-    if (!isNaN(lastEpoch) && nowEpoch - lastEpoch < CACHE_UPDATE_INTERVAL_SECS) {
-      needsUpdate = false;
-    }
-  } catch {
-    // No timestamp file yet — treat as needing update.
-  }
-
-  if (needsUpdate) {
-    // Fetch latest refs.
-    await spawnPromise("git", ["-C", checkoutPath, "fetch", "--prune", "origin"], { signal });
-    await fs.promises.writeFile(lastFetchFile, String(nowEpoch), "utf-8");
-
-    // Reset to a clean slate from origin so workers always see a pristine tree.
-    await spawnPromise("git", ["-C", checkoutPath, "reset", "--hard", "origin/HEAD"], { signal });
-    await spawnPromise("git", ["-C", checkoutPath, "clean", "-ffd"], { signal });
-  }
+  // Always fetch and reset to a clean, up-to-date state.
+  // Note: `clean -ffd` removes submodule directories (the second -f enables
+  // cleaning dirs with a nested .git), so we re-init them afterwards.
+  await spawnPromise("git", ["-C", checkoutPath, "fetch", "--prune", "origin"], { signal });
+  await spawnPromise("git", ["-C", checkoutPath, "reset", "--hard", "origin/HEAD"], { signal });
+  await spawnPromise("git", ["-C", checkoutPath, "clean", "-ffd"], { signal });
+  await spawnPromise(
+    "git",
+    ["-C", checkoutPath, "submodule", "update", "--init", "--recursive", "--filter=blob:none"],
+    { signal },
+  ).catch(() => { /* repo may have no submodules — non-fatal */ });
 
   return checkoutPath;
 }

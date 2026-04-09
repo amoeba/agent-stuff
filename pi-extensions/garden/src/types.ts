@@ -42,6 +42,8 @@ export interface ProposedPR {
 export interface WorkerResult {
   repo: string;
   status: "done" | "running" | "error";
+  /** What the agent is doing right now — derived from the latest tool call */
+  currentStep?: string;
   /** The worker's final assistant text output */
   output: string;
   /** Parsed proposal, present when phase=propose and a change was found */

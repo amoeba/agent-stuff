@@ -5,7 +5,34 @@ import type { WorkerResult } from "./types";
 import { runGarden } from "./run";
 import { WIDGET_KEY } from "./constants";
 
-const ICONS = { done: "✅", running: "⏳", error: "❌" } as const;
+type CheckoutStatus = "pending" | "fetching" | "done" | "error";
+
+/**
+ * Build one widget row for a step group, truncating at maxLen chars.
+ * Format:  "  step (N): repo-a, repo-b +X more"
+ */
+function formatStepLine(step: string, repos: string[], maxLen = 80): string {
+  const prefix = `  ${step} (${repos.length}): `;
+  let line     = prefix;
+  let included = 0;
+
+  for (let i = 0; i < repos.length; i++) {
+    const sep       = included === 0 ? "" : ", ";
+    const candidate = line + sep + repos[i];
+    const remaining = repos.length - i - 1;
+    const overflow  = remaining > 0 ? `, +${remaining} more` : "";
+
+    if (included === 0 || (candidate + overflow).length <= maxLen) {
+      line = candidate;
+      included++;
+    } else {
+      line += `, +${repos.length - included} more`;
+      break;
+    }
+  }
+  return line;
+}
+
 
 export default function (pi: ExtensionAPI) {
   // ── /garden command ────────────────────────────────────────────────────────
@@ -61,22 +88,46 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
-      // Live progress widget
-      const renderWidget = (results: WorkerResult[]) => {
-        const running = results.filter((r) => r.status === "running").length;
-        const done = results.filter((r) => r.status === "done").length;
-        const errors = results.filter((r) => r.status === "error").length;
+      let widgetRepos: { name: string }[] = [];
+      const checkoutStatuses = new Map<string, CheckoutStatus>();
+      let liveResults: WorkerResult[] = [];
+
+      const renderWidget = () => {
+        if (widgetRepos.length === 0) return;
+
+        const n    = widgetRepos.length;
+        const done = liveResults.filter((r) => r.status === "done").length;
+
+        // Group repos by their current step.
+        const groups = new Map<string, string[]>();
+        const add = (step: string, name: string) => {
+          const arr = groups.get(step);
+          if (arr) arr.push(name);
+          else groups.set(step, [name]);
+        };
+
+        for (const repo of widgetRepos) {
+          const result = liveResults.find((r) => r.repo === repo.name);
+          const cs     = checkoutStatuses.get(repo.name);
+          if (result?.status === "done")    { add("done",  repo.name); continue; }
+          if (result?.status === "error")   { add("error", repo.name); continue; }
+          if (result?.status === "running") { add(result.currentStep ?? "starting", repo.name); continue; }
+          if (cs === "fetching")            { add("cloning", repo.name); continue; }
+          if (cs === "error")               { add("error",   repo.name); continue; }
+          add("waiting", repo.name);
+        }
+
+        // error first, active steps in the middle (alphabetical), waiting, done last.
+        const PRIORITY: Record<string, number> = { error: 0, waiting: 2, done: 3 };
+        const sortedSteps = [...groups.keys()].sort((a, b) => {
+          const pa = PRIORITY[a] ?? 1;
+          const pb = PRIORITY[b] ?? 1;
+          return pa !== pb ? pa - pb : a.localeCompare(b);
+        });
+
         ctx.ui.setWidget(WIDGET_KEY, [
-          `🌱 garden  ${done} done, ${running} running${errors > 0 ? `, ${errors} errors` : ""}`,
-          ...results.map((r) => {
-            const icon = ICONS[r.status];
-            const snippet = r.output
-              ? "  " + r.output.trim().split("\n")[0].slice(0, 72)
-              : r.status === "running"
-                ? "  working…"
-                : "";
-            return `  ${icon} ${r.repo}${snippet ? `\n${snippet}` : ""}`;
-          }),
+          `🌱 Gardening across ${n} repos (${done}/${n} done)`,
+          ...sortedSteps.map((step) => formatStepLine(step, groups.get(step)!)),
         ]);
       };
 
@@ -87,7 +138,20 @@ export default function (pi: ExtensionAPI) {
         fileFilter: fileFilter || undefined,
         dryRun: false,
         onProgress: (msg) => ctx.ui.setStatus(WIDGET_KEY, msg),
-        onResults: renderWidget,
+        onReposDiscovered: (repos) => {
+          widgetRepos = repos;
+          checkoutStatuses.clear();
+          liveResults = [];
+          renderWidget();
+        },
+        onCheckoutProgress: (repo, status) => {
+          checkoutStatuses.set(repo, status);
+          renderWidget();
+        },
+        onResults: (results) => {
+          liveResults = results;
+          renderWidget();
+        },
         onPlansReady: async (plans) => {
           ctx.ui.setWidget(WIDGET_KEY, []);
           const rows = plans.map(

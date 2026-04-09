@@ -28,6 +28,10 @@ type RunGardenParams = {
   dryRun?: boolean;
   signal?: AbortSignal;
   onProgress?: (msg: string) => void;
+  /** Called once with the final filtered repo list, before any checkouts begin */
+  onReposDiscovered?: (repos: RepoInfo[]) => void;
+  /** Called per-repo as its cached checkout is fetched/refreshed */
+  onCheckoutProgress?: (repo: string, status: "fetching" | "done" | "error") => void;
   onResults?: (results: WorkerResult[]) => void;
   /** Called with all planned branch pushes; return false to abort before any push happens. */
   onPlansReady?: (plans: ProposedPR[]) => Promise<boolean>;
@@ -107,19 +111,28 @@ async function runWithWorkspace(
 
   const systemPrompt = getWorkerSystemPrompt();
 
+  // Notify caller of the final repo list so the UI can initialise before work starts.
+  params.onReposDiscovered?.(repos);
+
   // Pre-populate cached checkouts for all repos before spawning workers.
   // Workers use these for reads and as --reference for clones, saving network
   // round-trips on every run after the first.
   params.onProgress?.(`Fetching cached checkouts for ${repos.length} repos…`);
   const cachedPaths = new Map<string, string>();
   await mapConcurrent(repos, 4, async (repo) => {
+    params.onCheckoutProgress?.(repo.name, "fetching");
     try {
       const p = await ensureCachedCheckout(org, repo.name, signal);
       cachedPaths.set(repo.name, p);
+      params.onCheckoutProgress?.(repo.name, "done");
     } catch {
+      params.onCheckoutProgress?.(repo.name, "error");
       // Non-fatal — worker will fall back to a network clone.
     }
   });
+  // Checkouts done — clear the stale footer message so the widget is the
+  // sole source of truth while agents run.
+  params.onProgress?.("");
 
   // ── Phase 1: propose ────────────────────────────────────────────────────────
   // Each worker clones, applies the change, pushes a branch, and outputs a
@@ -130,6 +143,10 @@ async function runWithWorkspace(
     status: "running" as const,
     output: "",
   }));
+
+  // Let the UI show all agents as "running" immediately, before the first
+  // onUpdate event arrives from any individual worker.
+  params.onResults?.([...results]);
 
   await mapConcurrent(repos, MAX_CONCURRENCY, async (repo, i) => {
     const job: WorkerJob = {
