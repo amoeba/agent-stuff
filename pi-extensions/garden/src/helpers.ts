@@ -122,29 +122,6 @@ async function writePromptFile(content: string): Promise<string> {
   return file;
 }
 
-/**
- * Map a tool call onto a human-readable step label shown in the progress widget.
- */
-function inferStep(toolName: string, args: Record<string, unknown>): string {
-  if (toolName === "bash") {
-    const cmd = String(args["command"] ?? "").toLowerCase();
-    if (/git\s+(clone|fetch|pull)\b/.test(cmd))              return "cloning";
-    if (/git\s+push\b/.test(cmd))                            return "pushing";
-    if (/git\s+commit\b/.test(cmd))                          return "committing";
-    if (/git\s+(checkout\s+-[bB]|switch\s+-c)\b/.test(cmd)) return "branching";
-    if (/\bgh\s+pr\b/.test(cmd))                            return "opening PR";
-    if (/\bgh\s+run\b/.test(cmd))                           return "monitoring CI";
-    if (/\b(grep|rg|ripgrep|ag|find)\b/.test(cmd))          return "searching";
-    if (/\b(npm|yarn|pnpm)\s+(test|run)\b/.test(cmd) ||
-        /\b(go test|cargo test|pytest|jest|vitest)\b/.test(cmd)) return "testing";
-    return "running";
-  }
-  if (toolName === "read")  return "reading";
-  if (toolName === "write") return "writing";
-  if (toolName === "edit")  return "editing";
-  return toolName;
-}
-
 export async function runWorker(
   job: WorkerJob,
   systemPrompt: string,
@@ -178,30 +155,50 @@ export async function runWorker(
         stdio: ["ignore", "pipe", "pipe"],
       });
       let buffer = "";
+      // Accumulates streaming text deltas for the current assistant message so
+      // that STEP: markers split across multiple delta chunks are still matched.
+      let deltaAccum = "";
 
       const processLine = (line: string) => {
         if (!line.trim()) return;
         let event: any;
         try { event = JSON.parse(line); } catch { return; }
 
-        // Track which tool is currently executing so the widget can show the
-        // agent's current step in real time.
+        // Reset accumulator at the start of each new assistant message.
+        if (event.type === "message_start") {
+          deltaAccum = "";
+          return;
+        }
+
+        // Pick up explicit STEP: markers the agent emits in its streaming text.
+        // Accumulate deltas so markers split across chunks are still matched.
+        if (event.type === "message_update" && event.assistantMessageEvent?.type === "text_delta") {
+          deltaAccum += event.assistantMessageEvent.delta ?? "";
+          const matches = [...deltaAccum.matchAll(/STEP:\s*([^\n]+)/gi)];
+          if (matches.length > 0) {
+            const step = matches[matches.length - 1][1].trim();
+            if (step && step !== result.currentStep) {
+              result.currentStep = step;
+              onUpdate({ ...result });
+            }
+          }
+          return;
+        }
+
+        // Fall back to tool name while a tool is executing.
         if (event.type === "tool_execution_start") {
-          result.currentStep = inferStep(event.toolName ?? "", event.args ?? {});
+          result.currentStep = event.toolName ?? "";
           onUpdate({ ...result });
           return;
         }
         if (event.type === "tool_execution_end") {
-          result.currentStep = "thinking";
+          result.currentStep = "working";
           onUpdate({ ...result });
           return;
         }
 
-        // Capture final assistant text from message_end and tool_result_end
-        if (
-          (event.type === "message_end" || event.type === "tool_result_end") &&
-          event.message?.role === "assistant"
-        ) {
+        // Capture the final assistant text from the completed message.
+        if (event.type === "message_end" && event.message?.role === "assistant") {
           for (const part of event.message.content ?? []) {
             if (part.type === "text" && part.text) {
               result.output = part.text;
