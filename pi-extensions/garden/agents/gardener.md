@@ -72,6 +72,12 @@ git clone --depth=1 --single-branch --quiet \
   https://github.com/{org}/{repo} {workspace}/{repo}
 ```
 
+Then initialise submodules so their files are available:
+
+```bash
+git -C {workspace}/{repo} submodule update --init --recursive --filter=blob:none
+```
+
 ### 2 — Check if change is already applied
 If already present, say so clearly and stop. Do not output a `PROPOSED_PR` block.
 
