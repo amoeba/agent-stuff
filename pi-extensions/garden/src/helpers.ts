@@ -187,7 +187,16 @@ export async function runWorker(
 
         // Fall back to tool name while a tool is executing.
         if (event.type === "tool_execution_start") {
-          result.currentStep = event.toolName ?? "";
+          const toolName: string = event.toolName ?? "";
+          const args: Record<string, unknown> = event.args ?? {};
+          const argSummary = Object.entries(args)
+            .map(([k, v]) => {
+              const s = typeof v === "string" ? v : JSON.stringify(v);
+              const truncated = s.length > 80 ? s.slice(0, 77) + "…" : s;
+              return `${k}: ${truncated}`;
+            })
+            .join(", ");
+          result.currentStep = argSummary ? `${toolName}(${argSummary})` : toolName;
           onUpdate({ ...result });
           return;
         }
