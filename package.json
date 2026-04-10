@@ -14,6 +14,10 @@
       "./pi-extensions/garden/skills"
     ]
   },
+  "type": "module",
+  "scripts": {
+    "test": "node --experimental-strip-types --test pi-extensions/garden/src/helpers.test.ts"
+  },
   "devDependencies": {
     "@mariozechner/pi-coding-agent": "^0.64.0",
     "@sinclair/typebox": "^0.34.49",

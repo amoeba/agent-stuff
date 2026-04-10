@@ -78,12 +78,21 @@ export default function (pi: ExtensionAPI) {
       let widgetRepos: { name: string }[] = [];
       const checkoutStatuses = new Map<string, CheckoutStatus>();
       let liveResults: WorkerResult[] = [];
+      let gardenWorkspace = "";
 
       const renderWidget = () => {
         if (widgetRepos.length === 0) return;
 
         const n    = widgetRepos.length;
         const done = liveResults.filter((r) => r.status === "done").length;
+
+        const taskPreview = task.length > 60 ? task.slice(0, 57) + "…" : task;
+        const contextLines = [
+          `🌱 Garden — org: ${org}${repoFilter ? `  repo: ${repoFilter}` : ""}${fileFilter ? `  file: ${fileFilter}` : ""}`,
+          `   task: ${taskPreview}`,
+          ...(gardenWorkspace ? [`   tmp:  ${gardenWorkspace}`] : []),
+          `   ${done}/${n} done`,
+        ];
 
         const rows = widgetRepos.map((repo) => {
           const cs     = checkoutStatuses.get(repo.name);
@@ -93,7 +102,7 @@ export default function (pi: ExtensionAPI) {
         });
 
         ctx.ui.setWidget(WIDGET_KEY, [
-          `🌱 Gardening across ${n} repos (${done}/${n} done)`,
+          ...contextLines,
           ...rows,
         ]);
       };
@@ -105,8 +114,9 @@ export default function (pi: ExtensionAPI) {
         fileFilter: fileFilter || undefined,
         dryRun: false,
         onProgress: (msg) => ctx.ui.setStatus(WIDGET_KEY, msg),
-        onReposDiscovered: (repos) => {
+        onReposDiscovered: (repos, workspace) => {
           widgetRepos = repos;
+          gardenWorkspace = workspace;
           checkoutStatuses.clear();
           liveResults = [];
           renderWidget();

@@ -28,8 +28,8 @@ type RunGardenParams = {
   dryRun?: boolean;
   signal?: AbortSignal;
   onProgress?: (msg: string) => void;
-  /** Called once with the final filtered repo list, before any checkouts begin */
-  onReposDiscovered?: (repos: RepoInfo[]) => void;
+  /** Called once with the final filtered repo list and workspace dir, before any checkouts begin */
+  onReposDiscovered?: (repos: RepoInfo[], workspace: string) => void;
   /** Called per-repo as its cached checkout is fetched/refreshed */
   onCheckoutProgress?: (repo: string, status: "fetching" | "done" | "error") => void;
   onResults?: (results: WorkerResult[]) => void;
@@ -112,7 +112,7 @@ async function runWithWorkspace(
   const systemPrompt = getWorkerSystemPrompt();
 
   // Notify caller of the final repo list so the UI can initialise before work starts.
-  params.onReposDiscovered?.(repos);
+  params.onReposDiscovered?.(repos, workspace);
 
   // Pre-populate cached checkouts for all repos before spawning workers.
   // Workers use these for reads and as --reference for clones, saving network
