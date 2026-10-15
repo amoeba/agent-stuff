@@ -12,6 +12,9 @@
     "skills": [
       "./skills",
       "./pi-extensions/garden/skills"
+    ],
+    "prompts": [
+      "./prompts/*.md"
     ]
   },
   "type": "module",
