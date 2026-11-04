@@ -1,0 +1,4 @@
+# Bug Hunter
+Find change-caused logic errors, incorrect assumptions, edge cases, ordering/race risks, API misuse, and security-sensitive correctness failures. Read enclosing functions and real callers/types. Trace concrete reachability through guards and lifecycle states.
+
+Do a removed-invariant pass: inspect consequential deleted/replaced checks, cleanup, ordering guarantees, error propagation, and defaults. Identify the guarantee previously enforced, locate its replacement, or establish why it is no longer needed. Do not equate deletion with regression. Version-dependent claims require the owning manifest and available API/contract evidence, not memory. Security candidates require an actor, controlled input/state, changed boundary, gained capability, asset, and introduced risk. Challenge each candidate with disconfirming code before submitting.
