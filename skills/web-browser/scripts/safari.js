@@ -94,7 +94,7 @@ async function start() {
     throw new Error(`${SAFARIDRIVER} not found (Safari 27+ on macOS required)`);
   }
   mkdirSync(SAFARI_DIR, { recursive: true });
-  const log = openSync(LOG_FILE, "a");
+  const log = openSync(LOG_FILE, "w"); // fresh log per session so errors are relevant
   const child = spawn(process.execPath, [join(here, "safari-daemon.js")], {
     detached: true,
     stdio: ["ignore", log, log],

@@ -14,13 +14,45 @@
 
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeSync } from "node:fs";
 import { SAFARI_DIR, SOCKET_PATH, PID_FILE, SAFARIDRIVER } from "./safari-paths.js";
 
 const IDLE_TIMEOUT_MS = Number(process.env.SAFARI_IDLE_TIMEOUT_MS || 30 * 60 * 1000);
 const CALL_TIMEOUT_MS = Number(process.env.SAFARI_CALL_TIMEOUT_MS || 120 * 1000);
 
-mkdirSync(SAFARI_DIR, { recursive: true });
+mkdirSync(SAFARI_DIR, { recursive: true, mode: 0o700 });
+chmodSync(SAFARI_DIR, 0o700); // socket drives the browser; keep it owner-only
+
+// Single-instance lock: the PID file is created exclusively. If another live
+// daemon holds it, exit quietly; if the holder is dead, take over.
+function isAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function acquireLock() {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const fd = openSync(PID_FILE, "wx");
+      writeSync(fd, String(process.pid));
+      closeSync(fd);
+      return true;
+    } catch (e) {
+      if (e.code !== "EEXIST") throw e;
+      const holder = Number(readFileSync(PID_FILE, "utf8").trim());
+      if (holder && isAlive(holder)) return false;
+      rmSync(PID_FILE, { force: true }); // stale
+    }
+  }
+  return false;
+}
+if (!acquireLock()) {
+  console.error("daemon: another daemon is running, exiting");
+  process.exit(0);
+}
 if (existsSync(SOCKET_PATH)) rmSync(SOCKET_PATH, { force: true });
 
 const driver = spawn(SAFARIDRIVER, ["--mcp"], { stdio: ["pipe", "pipe", "inherit"] });
@@ -131,6 +163,5 @@ const server = createServer((sock) => {
 });
 
 server.listen(SOCKET_PATH, () => {
-  writeFileSync(PID_FILE, String(process.pid));
   console.error(`daemon: listening on ${SOCKET_PATH}`);
 });

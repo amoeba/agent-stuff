@@ -47,8 +47,8 @@ tab, enable Settings → Advanced → "Show features for web developers" first).
 Wraps Safari's built-in MCP server (`/usr/bin/safaridriver --mcp`). A
 background daemon keeps one session alive, so every call shares the same
 agent window, tabs, and console/network buffers. Safari shows a banner on
-that window. The session has no access to the user's Safari data (no
-logins or cookies).
+that window. The session doesn't see the user's Safari logins or
+cookies, but the user's installed Safari extensions do run in it.
 
 ```bash
 ./scripts/safari.js start            # open the agent window (any tool call also auto-starts)
