@@ -1,0 +1,4 @@
+# Code Quality
+Review consequential maintainability, error handling, complexity, wasted work, and consistency with documented or demonstrated project conventions. Inspect comparable implementations. For guideline violations, cite the exact applicable rule and violating code; for observed conventions, cite concrete examples. Do not invent a convention from preference.
+
+A quality finding needs a concrete maintenance/correctness consequence and a named simpler/safer alternative (for example an existing helper or a specific simpler structure), not vague best-practice or future-architecture advice. Check whether a removed guard/error path has an equivalent replacement before flagging it. Distinguish improvements from defects. Architectural and missing-piece claims must follow current codebase relationships and actual requirements, not imagined deployments or hypothetical consumers.

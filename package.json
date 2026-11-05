@@ -7,7 +7,8 @@
   ],
   "pi": {
     "extensions": [
-      "./pi-extensions/garden/src/index.ts"
+      "./pi-extensions/garden/src/index.ts",
+      "./pi-extensions/pr-review/src/index.ts"
     ],
     "skills": [
       "./skills",
@@ -19,11 +20,24 @@
   },
   "type": "module",
   "scripts": {
-    "test": "node --experimental-strip-types --test pi-extensions/garden/src/helpers.test.ts"
+    "test": "node --experimental-strip-types --test pi-extensions/garden/src/helpers.test.ts pi-extensions/pr-review/src/*.test.ts",
+    "test:pr-review": "node --experimental-strip-types --test pi-extensions/pr-review/src/*.test.ts",
+    "eval:pr-review": "node --experimental-strip-types pi-extensions/pr-review/eval/run.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.84.3",
+    "@earendil-works/pi-ai": ">=0.84.3",
+    "@earendil-works/pi-tui": ">=0.84.3",
+    "typebox": "^1.0.0"
   },
   "devDependencies": {
+    "@earendil-works/pi-ai": "^0.84.3",
+    "@earendil-works/pi-coding-agent": "^0.84.3",
+    "@earendil-works/pi-tui": "^0.84.3",
     "@mariozechner/pi-coding-agent": "^0.64.0",
     "@sinclair/typebox": "^0.34.49",
+    "typebox": "^1.4.4",
     "typescript": "^6.0.2"
   }
 }

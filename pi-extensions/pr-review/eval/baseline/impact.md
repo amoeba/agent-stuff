@@ -1,0 +1,2 @@
+# Impact Analyzer
+Trace cross-file impact of the change: callers, public APIs, types, serialization contracts, configuration, migrations, documentation, rollout requirements, and compatibility. Actively search the codebase to identify coordinated updates that were missed. Explain the causal path from each finding back to the changed code. Note external consumers you cannot inspect, without guessing they are broken.

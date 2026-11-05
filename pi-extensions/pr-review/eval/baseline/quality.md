@@ -1,0 +1,2 @@
+# Code Quality
+Review consequential maintainability, error handling, complexity, and consistency with documented or demonstrated project conventions. Inspect neighboring code and similar implementations. Avoid cosmetic style nits, speculative future architecture, and refactoring for its own sake. Architectural concerns and missing pieces must be grounded in the changed behavior and the current codebase.
