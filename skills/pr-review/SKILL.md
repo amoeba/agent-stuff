@@ -1,6 +1,6 @@
 ---
 name: pr-review
-description: Run an explicitly requested, inspection-only multi-agent code review in pi: four independent reviewers, a skeptical verifier, and synthesis. Use only when the user asks for this review; never automatically after implementation.
+description: "Run an explicitly requested, inspection-only multi-agent code review in pi: four independent reviewers, a skeptical verifier, and synthesis. Use only when the user asks for this review; never automatically after implementation."
 ---
 
 # Multi-agent review
