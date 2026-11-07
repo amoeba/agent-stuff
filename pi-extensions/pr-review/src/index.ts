@@ -174,7 +174,7 @@ export default function (pi: ExtensionAPI) {
         void executeReview(request, ctx, controller, undefined, activities => panel.setActivities(activities))
           .then(done, error => done({ error: error instanceof Error ? error : new Error(String(error)) }));
         return panel;
-      }, { overlay: true, overlayOptions: { width: "75%", maxHeight: 12 } });
+      }, { overlay: true, overlayOptions: { width: "75%", maxHeight: 20 } });
     });
     if (!result || "error" in result) throw result?.error ?? new Error("Review cancelled");
     if (!alive) return;
