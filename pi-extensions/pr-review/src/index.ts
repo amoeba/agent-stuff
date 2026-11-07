@@ -1,7 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
-import { BorderedLoader, getAgentDir, getMarkdownTheme, ModelRuntime, type ExtensionAPI, type ExtensionContext, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, getMarkdownTheme, ModelRuntime, type ExtensionAPI, type ExtensionContext, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { Markdown } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { HELP, parseRequest, tokenize } from "./commands.ts";
@@ -11,6 +11,7 @@ import { git } from "./git.ts";
 import { clean, loadLast, renderReport, saveReport } from "./report.ts";
 import { truncate } from "./files.ts";
 import { prepareSnapshot, removeSnapshot } from "./snapshot.ts";
+import { ReviewProgressPanel, STAGES } from "./progress.ts";
 import { addModelUsage, addUsage, emptyModelUsage, emptyUsage, type ReviewConfig, type ReviewRequest, type ReviewRun, type Stage, type Thinking } from "./types.ts";
 
 const thinkingLevels: Thinking[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
@@ -99,7 +100,7 @@ export default function (pi: ExtensionAPI) {
     if (ctx.mode === "print") process.stdout.write(`${safe}\n`);
   }
 
-  async function executeReview(request: ReviewRequest, ctx: ExtensionContext, controller: AbortController, update?: (text: string) => void): Promise<{ run: ReviewRun; directory: string }> {
+  async function executeReview(request: ReviewRequest, ctx: ExtensionContext, controller: AbortController, update?: (text: string) => void, onStages?: (activities: ReadonlyMap<Stage, string>) => void): Promise<{ run: ReviewRun; directory: string }> {
     const signal = controller.signal;
     let config = await loadConfig();
     if (!config) config = await configure(ctx);
@@ -127,12 +128,13 @@ export default function (pi: ExtensionAPI) {
       const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
       if (!auth.ok) throw new Error(auth.error);
       if (auth.apiKey && !ctx.modelRegistry.isUsingOAuth(model)) await runtime.setRuntimeApiKey(config.provider, auth.apiKey, { signal });
-      const activities = new Map<Stage, string>();
+      const activities = new Map<Stage, string>(STAGES.map(stage => [stage, "queued"]));
       const runner = createStageRunner({ snapshot, config, model, modelRuntime: runtime, signal,
         onProgress: (stage, activity) => {
           activities.set(stage, activity);
           const text = [...activities].map(([name, state]) => `${name}: ${state}`).join(" · ");
           update?.(text);
+          onStages?.(activities);
         },
       });
       const stages = await runPipeline(snapshot, runner);
@@ -166,14 +168,13 @@ export default function (pi: ExtensionAPI) {
     // The loader is an overlay: selection/confirmation dialogs temporarily take input.
     const result = await withController(ctx, async controller => {
       if (ctx.mode !== "tui") return executeReview(request, ctx, controller, text => ctx.ui.setStatus("pr-review", text));
-      // One loader per full review. Escape aborts work; closure waits for all cleanup before closing.
-      return ctx.ui.custom<{ run: ReviewRun; directory: string } | { error: Error }>((tui, theme, _keys, done) => {
-        const loader = new BorderedLoader(tui, theme, "Preparing multi-agent review (Escape cancels)…");
-        loader.onAbort = () => controller.abort();
-        void executeReview(request, ctx, controller, text => ctx.ui.setStatus("pr-review", text))
+      // One stage rail per full review. Escape aborts work; closure waits for all cleanup before closing.
+      return ctx.ui.custom<{ run: ReviewRun; directory: string } | { error: Error }>((tui, theme, keybindings, done) => {
+        const panel = new ReviewProgressPanel(tui, theme, keybindings, () => controller.abort());
+        void executeReview(request, ctx, controller, undefined, activities => panel.setActivities(activities))
           .then(done, error => done({ error: error instanceof Error ? error : new Error(String(error)) }));
-        return loader;
-      }, { overlay: true, overlayOptions: { width: "75%", maxHeight: 6 } });
+        return panel;
+      }, { overlay: true, overlayOptions: { width: "75%", maxHeight: 12 } });
     });
     if (!result || "error" in result) throw result?.error ?? new Error("Review cancelled");
     if (!alive) return;

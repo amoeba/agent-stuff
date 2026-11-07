@@ -37,6 +37,7 @@ export function createStageRunner(options: {
   const { snapshot, config, model, modelRuntime, signal, onProgress } = options;
   return async (stage, prompt, candidates = [], verification) => {
     signal.throwIfAborted();
+    onProgress?.(stage, "starting");
     const result: StageResult = { stage, status: "failed", usage: emptyUsage(), calls: [] };
     let submitted: StageResult["output"];
     const shared = await fs.readFile(path.join(options.promptDirectory ?? agentsDir, "shared.md"), "utf8");
